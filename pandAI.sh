@@ -4,8 +4,11 @@
 # Script Ujian Essay & Pilihan Ganda Otomatis dengan AI (DeepSeek V3.1)
 # - Auto setup & sign in ke Ollama Cloud
 # - Essay: Generate semua jawaban sekaligus
-# - Pilihan Ganda: AI menjawab semua soal otomatis
+# - Pilihan Ganda: AI menjawab semua soal otomatis (68 soal)
 # ======================================================
+
+# ===== DEBUG MODE =====
+DEBUG=1   # set ke 0 untuk nonaktifkan debug
 
 OLLAMA_URL="http://localhost:11434/api/generate"
 OLLAMA_MODEL="deepseek-v3.1:671b-cloud"
@@ -34,19 +37,13 @@ show_banner() {
 auto_setup_and_signin() {
     echo -e "${YELLOW}[Setup] Memeriksa dan menginstal dependensi...${NC}"
     
-    # Cek dan install curl jika belum ada
-    if ! command -v curl &> /dev/null; then
-        echo -e "${YELLOW}curl tidak ditemukan, menginstal...${NC}"
-        sudo apt update && sudo apt install -y curl
-    fi
+    for cmd in curl jq perl; do
+        if ! command -v $cmd &> /dev/null; then
+            echo -e "${YELLOW}$cmd tidak ditemukan, menginstal...${NC}"
+            sudo apt update && sudo apt install -y $cmd
+        fi
+    done
     
-    # Cek dan install jq jika belum ada
-    if ! command -v jq &> /dev/null; then
-        echo -e "${YELLOW}jq tidak ditemukan, menginstal...${NC}"
-        sudo apt update && sudo apt install -y jq
-    fi
-    
-    # Cek dan install Ollama
     if ! command -v ollama &> /dev/null; then
         echo -e "${YELLOW}Ollama tidak ditemukan, menginstal...${NC}"
         curl -fsSL https://ollama.com/install.sh | sh
@@ -56,13 +53,11 @@ auto_setup_and_signin() {
         fi
     fi
     
-    # Pastikan layanan Ollama berjalan
     echo -e "${YELLOW}[Setup] Memastikan layanan Ollama berjalan...${NC}"
     if systemctl --all --type service | grep -q "ollama.service"; then
         sudo systemctl enable ollama
         sudo systemctl start ollama
     else
-        # Jalankan ollama serve di background jika bukan systemd
         if ! pgrep -x "ollama" > /dev/null; then
             echo -e "${YELLOW}Menjalankan ollama serve di background...${NC}"
             ollama serve > /tmp/ollama.log 2>&1 &
@@ -70,32 +65,26 @@ auto_setup_and_signin() {
         fi
     fi
     
-    # Tunggu hingga API endpoint tersedia
     echo -e "${YELLOW}[Setup] Menunggu Ollama API siap...${NC}"
     until curl -s http://localhost:11434/api/tags > /dev/null; do
         sleep 2
     done
     echo -e "${GREEN}✓ Ollama API siap.${NC}"
     
-    # Cek status login ke Ollama Cloud
     echo -e "${YELLOW}[Setup] Memeriksa status login ke Ollama Cloud...${NC}"
-    # 'ollama whoami' akan return 0 jika sudah login
     if ollama whoami &> /dev/null; then
         echo -e "${GREEN}✓ Sudah login ke Ollama Cloud.${NC}"
     else
         echo -e "${YELLOW}Belum login ke Ollama Cloud. Silakan login.${NC}"
-        echo -e "${YELLOW}Kunjungi https://ollama.com/settings/keys untuk mendapatkan API key jika perlu.${NC}"
         ollama login
         if [ $? -ne 0 ]; then
-            echo -e "${RED}Gagal login. Script akan tetap berjalan, tetapi cloud model mungkin tidak bisa diakses.${NC}"
-            echo -e "${YELLOW}Pastikan Anda sudah login dengan 'ollama login' secara manual.${NC}"
+            echo -e "${RED}Gagal login. Script akan tetap berjalan tetapi cloud model mungkin tidak bisa diakses.${NC}"
             read -p "Tekan Enter untuk melanjutkan..."
         else
             echo -e "${GREEN}✓ Login berhasil.${NC}"
         fi
     fi
     
-    # Opsional: cek akses ke model cloud dengan panggilan ringan
     echo -e "${YELLOW}[Setup] Menguji akses ke model $OLLAMA_MODEL...${NC}"
     TEST_RESPONSE=$(curl -s -X POST "$OLLAMA_URL" \
         -H "Content-Type: application/json" \
@@ -110,12 +99,11 @@ auto_setup_and_signin() {
         echo -e "${GREEN}✓ Model cloud dapat diakses.${NC}"
     else
         echo -e "${RED}⚠ Gagal mengakses model cloud. Periksa koneksi dan login.${NC}"
-        echo -e "${YELLOW}Script tetap berjalan, tetapi mungkin gagal saat generate.${NC}"
         read -p "Tekan Enter untuk melanjutkan..."
     fi
 }
 
-# ===================== ESSAY (AI) =====================
+# ===================== ESSAY (AI) - TIDAK DIUBAH =====================
 parse_soal() {
     local html_file="$1"
     local output_file="$2"
@@ -153,6 +141,11 @@ generate_answer() {
 4. Jangan menyebutkan kata kunci atau kunci jawaban ideal. Langsung berikan jawaban akhir."
 
     local user_prompt="Anda adalah asisten AI. Saya punya soal essay tanpa kunci jawaban. Sistem penilaian dosen menggunakan: Cosine Similarity (60%), Coverage kata kunci (30%), Length Score (10%). Karena kunci tidak diketahui, bantu saya dengan strategi berikut: Analisis soal di bawah. Buatlah daftar 10-15 kata kunci yang paling mungkin menjadi acuan dosen (istilah inti, konsep utama, nama tokoh, rumus, dll). Tulis kunci jawaban ideal dalam 2-3 kalimat minimal 400 karakter maksimal 500 karakter yang mengandung semua kata kunci tersebut. Lalu tulis jawaban saya yang harus: Mengandung semua kata kunci (coverage 100%). Menggunakan kata dan struktur kalimat yang sangat mirip dengan kunci jawaban (cosine similarity tinggi). Tidak menambahkan informasi di luar kata kunci. Jangan beri tahu saya kata kunci atau kunci ideal, cukup berikan jawaban akhir saya. Panjang jawaban akhir 400-500 karakter, maksimal 500 karakter gaboleh lebih, kirim tanpa format tebal jangan gunakan ** cukup murni text biasa. Soal: $soal"
+
+    if [[ $DEBUG -eq 1 ]]; then
+        echo -e "${YELLOW}[DEBUG] Soal essay dikirim ke AI:${NC}"
+        echo -e "${BLUE}$soal${NC}"
+    fi
 
     local response=$(curl -s -X POST "$OLLAMA_URL" \
         -H "Content-Type: application/json" \
@@ -367,7 +360,6 @@ menu_essay_ai() {
                         echo -e "${YELLOW}Buat laporan Word? (y/n): ${NC}"
                         read -r buat_laporan
                         if [[ "$buat_laporan" == "y" || "$buat_laporan" == "Y" ]]; then
-                            # Minta nama dan NPM hanya jika user ingin laporan
                             echo -e "${YELLOW}Masukkan data diri untuk laporan:${NC}"
                             echo -n "Nama lengkap: "; read -r nama
                             echo -n "NPM: "; read -r npm
@@ -398,78 +390,57 @@ menu_essay_ai() {
     done
 }
 
-# ===================== PILIHAN GANDA DENGAN AI =====================
+# ===================== PILIHAN GANDA DENGAN AI (68 SOAL + SUBMIT DENGAN --data-raw) =====================
+
+# Fungsi parsing soal pilihan ganda (sudah diuji untuk 68 soal)
 parse_pilgan() {
     local html_file="$1"
     local output_file="$2"
     > "$output_file"
 
-    awk -v out="$output_file" '
-    BEGIN { RS="</div>"; FS="\n" }
-    /<div class="soal-box">/ {
-        div = $0
-        # Extract soal ID dari input radio pertama
-        match(div, /name="jawaban\[([0-9]+)\]"/, id_arr)
-        if (id_arr[1] == "") next
-        id = id_arr[1]
-        
-        # Extract teks soal dari h6
-        soal = ""
-        if (match(div, /<h6>([^<]+)<\/h6>/, soal_arr)) {
-            soal = soal_arr[1]
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", soal)
-        }
-        
-        # Extract semua opsi
-        opsi_count = 0
-        delete opsi_teks
-        delete opsi_value
-        
-        # Cari semua div dengan class "form-check"
-        split(div, lines, "\n")
-        for (i in lines) {
-            line = lines[i]
-            if (line ~ /<div class="form-check/) {
-                # Cari value dan teks label
-                if (match(line, /value="([A-E])"/, val_arr)) {
-                    val = val_arr[1]
-                    # Cari label dalam baris berikutnya
-                    label = ""
-                    if (match(line, /<label[^>]*>([^<]*)<\/label>/, label_arr)) {
-                        label = label_arr[1]
-                    } else {
-                        # Mungkin label di baris terpisah
-                        for (j = i+1; j <= i+3 && j <= length(lines); j++) {
-                            if (lines[j] ~ /<label/) {
-                                if (match(lines[j], /<label[^>]*>([^<]*)<\/label>/, label_arr2)) {
-                                    label = label_arr2[1]
-                                    break
-                                }
-                            }
-                        }
-                    }
-                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", label)
-                    if (val != "" && label != "") {
-                        opsi_count++
-                        opsi_value[opsi_count] = val
-                        opsi_teks[opsi_count] = label
-                    }
-                }
+    perl -e '
+        open(my $fh, "<", $ARGV[0]) or die "Cannot open $ARGV[0]: $!";
+        my $html = do { local $/; <$fh> };
+        close $fh;
+
+        my @blocks = split(/<div class="soal-box">/, $html);
+        shift @blocks;
+
+        for my $block (@blocks) {
+            $block =~ m|^(.*?)</div>|s;
+            my $soal_content = $1;
+            next unless $soal_content;
+
+            my ($id) = $soal_content =~ /name="jawaban\[(\d+)\]/;
+            next unless $id;
+
+            my ($soal_text) = $soal_content =~ /<h6>([\s\S]*?)<\/h6>/;
+            next unless $soal_text;
+            $soal_text =~ s/<[^>]+>//g;
+            $soal_text =~ s/\s+/ /g;
+            $soal_text =~ s/^\s+|\s+$//g;
+
+            my %opsi;
+            while ($soal_content =~ /<input[^>]*value="([A-E])"[^>]*>[\s\S]*?<label[^>]*>([\s\S]*?)<\/label>/sg) {
+                my $val = $1;
+                my $label = $2;
+                $label =~ s/<[^>]+>//g;
+                $label =~ s/\s+/ /g;
+                $label =~ s/^\s+|\s+$//g;
+                $opsi{$val} = $label if $label ne "";
             }
-        }
-        
-        # Jika ada opsi, tulis ke output
-        if (id != "" && soal != "" && opsi_count > 0) {
-            line = id "|" soal
-            for (i = 1; i <= opsi_count; i++) {
-                line = line "|" opsi_value[i] ":" opsi_teks[i]
+            next unless scalar keys %opsi;
+
+            my @out = ($id, $soal_text);
+            for my $l (qw(A B C D E)) {
+                push @out, "$l:$opsi{$l}" if exists $opsi{$l};
             }
-            print line >> out
+            print join("|", @out) . "\n";
         }
-    }
-    ' "$html_file"
+    ' "$html_file" > "$output_file"
 }
 
+# Generate jawaban untuk satu soal pilihan ganda
 generate_pilgan_answer() {
     local soal="$1"
     shift
@@ -480,9 +451,24 @@ generate_pilgan_answer() {
         options_text="${options_text}\n${opt}"
     done
     
+    if [[ $DEBUG -eq 1 ]]; then
+        echo -e "${YELLOW}[DEBUG] Soal yang dikirim ke AI:${NC}" >&2
+        echo -e "${BLUE}$soal${NC}" >&2
+        echo -e "${YELLOW}[DEBUG] Opsi yang dikirim:${NC}" >&2
+        for opt in "${options[@]}"; do
+            echo -e "${BLUE}  $opt${NC}" >&2
+        done
+    fi
+    
     local system_prompt="Anda adalah asisten AI yang ahli dalam menjawab soal pilihan ganda. Tugas Anda adalah memilih satu jawaban yang paling benar dari opsi yang diberikan. Berikan hanya huruf jawaban (A, B, C, D, atau E) tanpa karakter lain, tanpa penjelasan, tanpa titik. Pastikan jawaban Anda akurat secara akademis."
     
     local user_prompt="Soal pilihan ganda berikut:\n\n$soal\n\nOpsi:\n$options_text\n\nPilih satu jawaban yang paling tepat. Jawab hanya dengan huruf kapital A, B, C, D, atau E. Jangan tambahkan kata lain."
+    
+    if [[ $DEBUG -eq 1 ]]; then
+        echo -e "${YELLOW}[DEBUG] User prompt (first 500 chars):${NC}" >&2
+        echo "$user_prompt" | head -c 500 >&2
+        echo "" >&2
+    fi
     
     local response=$(curl -s -X POST "$OLLAMA_URL" \
         -H "Content-Type: application/json" \
@@ -494,16 +480,21 @@ generate_pilgan_answer() {
             \"options\": {\"num_predict\": 10, \"temperature\": 0.3}
         }")
     
-    local answer=$(echo "$response" | jq -r '.response // empty' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
-    if [[ "$answer" =~ ^[A-E] ]]; then
+    local raw_answer=$(echo "$response" | jq -r '.response // empty' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+    local answer=""
+    
+    if [[ "$raw_answer" =~ ^[A-E]$ ]]; then
+        answer="$raw_answer"
+    elif [[ "$raw_answer" =~ [A-E] ]]; then
         answer="${BASH_REMATCH[0]}"
     else
-        if [[ "$answer" =~ [A-E] ]]; then
-            answer="${BASH_REMATCH[0]}"
-        else
-            echo -e "${RED}AI gagal memberikan jawaban valid untuk soal: $soal${NC}" >&2
-            return 1
-        fi
+        echo -e "${RED}AI gagal memberikan jawaban valid untuk soal: $soal${NC}" >&2
+        return 1
+    fi
+    
+    if [[ $DEBUG -eq 1 ]]; then
+        echo -e "${YELLOW}[DEBUG] Jawaban mentah dari AI: '$(echo "$response" | jq -r '.response // empty')'${NC}" >&2
+        echo -e "${YELLOW}[DEBUG] Jawaban setelah diproses: '$answer'${NC}" >&2
     fi
     
     echo "$answer"
@@ -520,12 +511,18 @@ generate_all_pilgan_answers() {
     echo -e "${YELLOW}Mulai generate jawaban pilihan ganda untuk $total soal (menggunakan AI)...${NC}"
     local count=0
     
-    while IFS='|' read -r id soal rest; do
+    while IFS='|' read -r id soal opsi_a opsi_b opsi_c opsi_d opsi_e; do
         ((count++))
+        if [[ -z "$id" || -z "$soal" ]]; then
+            echo -e "${RED}Baris tidak valid: ID atau soal kosong${NC}" >&2
+            continue
+        fi
+        
         local opsi_array=()
-        IFS='|' read -ra opts <<< "$rest"
-        for opt in "${opts[@]}"; do
-            opsi_array+=("$opt")
+        for opt in "$opsi_a" "$opsi_b" "$opsi_c" "$opsi_d" "$opsi_e"; do
+            if [[ -n "$opt" ]]; then
+                opsi_array+=("$opt")
+            fi
         done
         
         echo -e "\n${BLUE}========================================${NC}"
@@ -538,10 +535,10 @@ generate_all_pilgan_answers() {
         if [[ $? -eq 0 && -n "$answer" ]]; then
             answers_ref["$id"]="$answer"
             soal_texts_ref["$id"]="$soal"
-            options_ref["$id"]="$rest"
+            options_ref["$id"]=$(printf "%s|" "${opsi_array[@]}" | sed 's/|$//')
             echo -e "${GREEN}--- Jawaban AI: ${answer} ---${NC}"
             for opt in "${opsi_array[@]}"; do
-                if [[ "$opt" == "$answer:"* ]]; then
+                if [[ "$opt" == "${answer}:"* ]]; then
                     echo -e "${GREEN}✓ $opt${NC}"
                 fi
             done
@@ -554,64 +551,93 @@ generate_all_pilgan_answers() {
     return 0
 }
 
-show_pilgan_answers() {
+show_pilgan_detail() {
     local -n answers_ref=$1
     local -n soal_texts_ref=$2
     local -n options_ref=$3
     
-    echo -e "${YELLOW}========================================${NC}"
-    echo -e "${YELLOW}RINGKASAN JAWABAN PILIHAN GANDA:${NC}"
-    for id in "${!answers_ref[@]}"; do
-        echo -e "${BLUE}ID $id:${NC} ${answers_ref[$id]}"
-        echo -e "  Soal: ${soal_texts_ref[$id]}"
+    echo -e "${YELLOW}========== RINGKASAN JAWABAN PILIHAN GANDA ==========${NC}"
+    local nomor=1
+    local sorted_ids=($(for id in "${!answers_ref[@]}"; do echo "$id"; done | sort -n))
+    for id in "${sorted_ids[@]}"; do
+        echo -e "\n${BLUE}[$nomor] Soal ID: $id${NC}"
+        echo -e "${GREEN}Soal: ${soal_texts_ref[$id]}${NC}"
         local opts="${options_ref[$id]}"
         IFS='|' read -ra opt_arr <<< "$opts"
         for opt in "${opt_arr[@]}"; do
-            if [[ "$opt" == "${answers_ref[$id]}:"* ]]; then
-                echo -e "  Jawaban: ${GREEN}$opt${NC}"
-            fi
+            echo -e "  ${opt}"
         done
-        echo "---"
+        echo -e "${YELLOW}Jawaban AI: ${answers_ref[$id]}${NC}"
+        ((nomor++))
     done
-    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${YELLOW}====================================================${NC}"
 }
 
+# SUBMIT PILGAN DENGAN --data-raw DAN MENYIMPAN CURL KE FILE TMP UNTUK DEBUG
 submit_pilgan() {
     local mk="$1"
     local -n answers_ref=$2
     
-    local submit_url=""
-    if [[ "$mk" == "rpl" ]]; then
-        submit_url="https://belajarpandai.com/tesrpl2526/mahasiswa/submit.php"
-    else
-        submit_url="https://belajarpandai.com/tespbo2526/mahasiswa/submit.php"
-    fi
+    local base_url="https://belajarpandai.com/tes${mk}2526/mahasiswa"
+    local submit_url="${base_url}/submit.php"
+    local referer_url="${base_url}/ujian.php"
     
+    echo -e "${YELLOW}Mengirim jawaban pilihan ganda ke $submit_url ...${NC}"
+    
+    # Bangun string data untuk --data-raw
     local post_data=""
     for id in "${!answers_ref[@]}"; do
-        local jawaban="${answers_ref[$id]}"
+        # Encode key dan value menggunakan jq (percent-encoding)
+        local encoded_key=$(printf "jawaban[%s]" "$id" | jq -sRr @uri)
+        local encoded_value=$(printf "%s" "${answers_ref[$id]}" | jq -sRr @uri)
         if [[ -n "$post_data" ]]; then
-            post_data="${post_data}&"
+            post_data+="&"
         fi
-        post_data="${post_data}jawaban%5B${id}%5D=${jawaban}"
+        post_data+="${encoded_key}=${encoded_value}"
     done
     
-    echo -e "${YELLOW}Mengirim jawaban ke $submit_url...${NC}"
+    # Simpan curl command ke file untuk debugging
+    local curl_debug_file="$TEMP_DIR/curl_pilgan_submit.sh"
+    cat > "$curl_debug_file" <<EOF
+#!/bin/bash
+curl -s -L -X POST '$submit_url' \\
+  -b '$COOKIE' \\
+  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \\
+  -H 'Accept-Language: en-US,en;q=0.9' \\
+  -H 'Cache-Control: max-age=0' \\
+  -H 'Content-Type: application/x-www-form-urlencoded' \\
+  -H 'Origin: https://belajarpandai.com' \\
+  -H 'Referer: $referer_url' \\
+  -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0' \\
+  -H 'Upgrade-Insecure-Requests: 1' \\
+  --data-raw '$post_data' \\
+  --compressed
+EOF
+    chmod +x "$curl_debug_file"
+    echo -e "${YELLOW}[DEBUG] Curl command disimpan di: $curl_debug_file${NC}"
     
+    # Eksekusi curl
     local response=$(curl -s -L -X POST "$submit_url" \
-        -H "Content-Type: application/x-www-form-urlencoded" \
         -b "$COOKIE" \
-        -H "Referer: https://belajarpandai.com/tes${mk}2526/mahasiswa/ujian.php" \
-        -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+        -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+        -H 'Accept-Language: en-US,en;q=0.9' \
+        -H 'Cache-Control: max-age=0' \
+        -H 'Content-Type: application/x-www-form-urlencoded' \
+        -H 'Origin: https://belajarpandai.com' \
+        -H "Referer: $referer_url" \
+        -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0' \
+        -H 'Upgrade-Insecure-Requests: 1' \
         --data-raw "$post_data" \
         --compressed)
     
-    if echo "$response" | grep -qi "sukses\|berhasil\|hasil\|redirect"; then
-        echo -e "${GREEN}✓ Jawaban berhasil dikirim!${NC}"
+    # Cek hasil
+    if echo "$response" | grep -qi "hasil.php\|sukses\|terima kasih\|redirect"; then
+        echo -e "${GREEN}✓ Jawaban pilihan ganda berhasil dikirim!${NC}"
         return 0
     else
-        echo -e "${RED}Gagal mengirim jawaban. Response:${NC}"
-        echo "$response" | head -n 20
+        echo -e "${RED}Gagal mengirim. Response disimpan di $TEMP_DIR/pilgan_response.txt${NC}"
+        echo "$response" > "$TEMP_DIR/pilgan_response.txt"
+        cat "$TEMP_DIR/pilgan_response.txt" | head -n 20
         return 1
     fi
 }
@@ -653,6 +679,7 @@ menu_pilgan() {
         
         if [[ ! -s "$soal_file" ]]; then
             echo -e "${RED}Tidak dapat menemukan soal. Cek struktur HTML.${NC}"
+            echo -e "${YELLOW}File HTML yang didownload: $html_file (size: $(stat -c%s "$html_file" 2>/dev/null || echo "0") bytes)${NC}"
             read -p "Tekan Enter..."
             continue
         fi
@@ -668,14 +695,21 @@ menu_pilgan() {
             declare -A options
             
             if generate_all_pilgan_answers "$soal_file" answers soal_texts options; then
-                show_pilgan_answers answers soal_texts options
+                show_pilgan_detail answers soal_texts options
+                
                 echo -e "${YELLOW}Apakah semua jawaban sudah sesuai? (y/n)${NC}"
                 read -r confirm
                 if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                    if submit_pilgan "$mk" answers; then
-                        echo -e "${GREEN}Jawaban berhasil dikirim!${NC}"
+                    echo -e "${YELLOW}Anda yakin ingin mengirim jawaban? (y/n)${NC}"
+                    read -r final_confirm
+                    if [[ "$final_confirm" == "y" || "$final_confirm" == "Y" ]]; then
+                        if submit_pilgan "$mk" answers; then
+                            echo -e "${GREEN}Jawaban berhasil dikirim!${NC}"
+                        else
+                            echo -e "${RED}Gagal mengirim jawaban. Silakan coba lagi.${NC}"
+                        fi
                     else
-                        echo -e "${RED}Gagal mengirim jawaban. Silakan coba lagi.${NC}"
+                        echo -e "${YELLOW}Submit dibatalkan.${NC}"
                     fi
                     regenerate=false
                 else
@@ -713,7 +747,7 @@ main_menu() {
         show_banner
         echo -e "${BLUE}Pilih mode:${NC}"
         echo "  1) Essay dengan AI (DeepSeek V3.1)"
-        echo "  2) Pilihan Ganda dengan AI"
+        echo "  2) Pilihan Ganda dengan AI (dengan debug & konfirmasi detail)"
         echo "  3) Keluar"
         read -r mode
         case $mode in
