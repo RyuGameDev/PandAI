@@ -8,7 +8,7 @@
 # ======================================================
 
 # ===== DEBUG MODE =====
-DEBUG=1   # set ke 0 untuk nonaktifkan debug
+DEBUG=0   # set ke 0 untuk nonaktifkan debug
 
 OLLAMA_URL="http://localhost:11434/api/generate"
 OLLAMA_MODEL="deepseek-v3.1:671b-cloud"
