@@ -8,7 +8,7 @@
 # ======================================================
 
 # ===== DEBUG MODE =====
-DEBUG=0   # set ke 0 untuk nonaktifkan debug
+DEBUG=1   # set ke 0 untuk nonaktifkan debug
 
 OLLAMA_URL="http://localhost:11434/api/generate"
 OLLAMA_MODEL="deepseek-v3.1:671b-cloud"
@@ -390,62 +390,174 @@ menu_essay_ai() {
     done
 }
 
-# ===================== PILIHAN GANDA DENGAN AI (68 SOAL + SUBMIT DENGAN --data-raw) =====================
+# ========== FUNGSI TAMPIL HASIL UJIAN (TAMBAHAN BARU) ==========
 
-# Fungsi parsing soal pilihan ganda (sudah diuji untuk 68 soal)
+# Ekstrak data hasil dari HTML response
+extract_result_data() {
+    local html_file="$1"
+    local nilai=""
+    local total=""
+    local dikerjakan=""
+    local benar=""
+    
+    # Gunakan perl untuk parsing yang lebih stabil
+    perl -e '
+        local $/;
+        open(my $fh, "<", $ARGV[0]) or die;
+        my $html = <$fh>;
+        close($fh);
+        
+        # Cari nilai: <div class="nilai ...">96.1</div>
+        if ($html =~ /<div\s+class="[^"]*nilai[^"]*"[^>]*>([0-9.]+)<\/div>/i) {
+            print "nilai=$1\n";
+        }
+        # Cari Total Soal: biasanya "Total Soal: 77" atau "Total: 77"
+        if ($html =~ /Total\s+Soal:\s*([0-9]+)/i) {
+            print "total=$1\n";
+        } elsif ($html =~ /Total:\s*([0-9]+)/i) {
+            print "total=$1\n";
+        }
+        # Cari Dikerjakan
+        if ($html =~ /Dikerjakan:\s*([0-9]+)/i) {
+            print "dikerjakan=$1\n";
+        }
+        # Cari Benar
+        if ($html =~ /Benar:\s*([0-9]+)/i) {
+            print "benar=$1\n";
+        }
+    ' "$html_file" > "$TEMP_DIR/result_data.txt"
+    
+    source "$TEMP_DIR/result_data.txt"
+    echo "$nilai|$total|$dikerjakan|$benar"
+}
+
+# Tampilkan kotak hasil seperti HTML
+show_result_box() {
+    local nilai="$1"
+    local total="$2"
+    local dikerjakan="$3"
+    local benar="$4"
+    
+    clear_screen
+    show_banner
+    
+    local border="${GREEN}========================================${NC}"
+    local box_top="${GREEN}+--------------------------------------+${NC}"
+    local box_bottom="${GREEN}+--------------------------------------+${NC}"
+    
+    echo -e "$border"
+    echo -e "${YELLOW}            HASIL UJIAN${NC}"
+    echo -e "$border"
+    echo -e "${box_top}"
+    printf "|  ${BLUE}Nilai Akhir${NC}            :  ${GREEN}%s${NC}\n" "$nilai"
+    printf "|  ${BLUE}Total Soal${NC}             :  %s\n" "$total"
+    printf "|  ${BLUE}Dikerjakan${NC}             :  %s\n" "$dikerjakan"
+    printf "|  ${BLUE}Benar${NC}                  :  %s\n" "$benar"
+    echo -e "${box_bottom}"
+    
+    # Jika nilai tinggi, kasih warna
+    if (( $(echo "$nilai >= 85" | bc -l 2>/dev/null) )); then
+        echo -e "${GREEN}✨ Selamat! Anda lulus dengan sangat baik. ✨${NC}"
+    elif (( $(echo "$nilai >= 70" | bc -l 2>/dev/null) )); then
+        echo -e "${YELLOW}👍 Cukup baik, tingkatkan lagi. 👍${NC}"
+    else
+        echo -e "${RED}💪 Perlu belajar lebih giat. 💪${NC}"
+    fi
+    echo -e "$border"
+}
+
+# ========== PILIHAN GANDA (DIPERBAIKI) ==========
+
+# Parsing soal pilihan ganda - versi robust dengan debugging
 parse_pilgan() {
     local html_file="$1"
     local output_file="$2"
     > "$output_file"
-
+    
+    # Perl dengan pendekatan parsing blok per blok
     perl -e '
-        open(my $fh, "<", $ARGV[0]) or die "Cannot open $ARGV[0]: $!";
+        use strict;
+        use warnings;
+        my $html_file = $ARGV[0];
+        my $out_file = $ARGV[1];
+        open(my $fh, "<", $html_file) or die "Cannot open $html_file: $!";
         my $html = do { local $/; <$fh> };
-        close $fh;
-
-        my @blocks = split(/<div class="soal-box">/, $html);
-        shift @blocks;
-
-        for my $block (@blocks) {
-            $block =~ m|^(.*?)</div>|s;
-            my $soal_content = $1;
-            next unless $soal_content;
-
-            my ($id) = $soal_content =~ /name="jawaban\[(\d+)\]/;
+        close($fh);
+        
+        # Cari semua <div class="soal-box"> ... </div>
+        my @soal_blocks;
+        while ($html =~ /<div class="soal-box">(.*?)<\/div>\s*(?=<div class="soal-box">|<\/form>|$)/sg) {
+            push @soal_blocks, $1;
+        }
+        
+        my $soal_count = 0;
+        open(my $out, ">", $out_file) or die "Cannot open $out_file: $!";
+        
+        foreach my $block (@soal_blocks) {
+            # Ekstrak ID soal
+            my ($id) = $block =~ /name="jawaban\[(\d+)\]/;
             next unless $id;
-
-            my ($soal_text) = $soal_content =~ /<h6>([\s\S]*?)<\/h6>/;
+            
+            # Ekstrak teks soal dari <h6>
+            my ($soal_text) = $block =~ /<h6>([\s\S]*?)<\/h6>/i;
             next unless $soal_text;
             $soal_text =~ s/<[^>]+>//g;
             $soal_text =~ s/\s+/ /g;
             $soal_text =~ s/^\s+|\s+$//g;
-
+            
+            # Ekstrak semua opsi dari .opsi-box
             my %opsi;
-            while ($soal_content =~ /<input[^>]*value="([A-E])"[^>]*>[\s\S]*?<label[^>]*>([\s\S]*?)<\/label>/sg) {
-                my $val = $1;
-                my $label = $2;
+            my @opsi_boxes = $block =~ /<div class="[^"]*opsi-box[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?=<div class="|$)/g;
+            foreach my $obox (@opsi_boxes) {
+                my ($val) = $obox =~ /value="([A-E])"/;
+                next unless $val;
+                my ($label) = $obox =~ /<label[^>]*>([\s\S]*?)<\/label>/i;
+                next unless $label;
                 $label =~ s/<[^>]+>//g;
                 $label =~ s/\s+/ /g;
                 $label =~ s/^\s+|\s+$//g;
+                $label =~ s/&nbsp;/ /g;
                 $opsi{$val} = $label if $label ne "";
             }
-            next unless scalar keys %opsi;
-
+            
+            my $opt_count = scalar keys %opsi;
+            if ($opt_count < 2) {
+                warn "Soal ID $id hanya memiliki $opt_count opsi, dilewati.\n";
+                next;
+            }
+            
+            # Output: ID|Soal|A:teks|B:teks|C:teks|D:teks|E:teks
             my @out = ($id, $soal_text);
             for my $l (qw(A B C D E)) {
-                push @out, "$l:$opsi{$l}" if exists $opsi{$l};
+                my $txt = $opsi{$l} // "";
+                if ($txt ne "") {
+                    push @out, "$l:$txt";
+                }
             }
-            print join("|", @out) . "\n";
+            print $out join("|", @out) . "\n";
+            $soal_count++;
         }
-    ' "$html_file" > "$output_file"
+        close($out);
+        print STDERR "[parse] Total soal terdeteksi: $soal_count\n";
+    ' "$html_file" "$output_file"
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}Error saat parsing HTML pilihan ganda.${NC}" >&2
+        return 1
+    fi
+    
+    local total=$(wc -l < "$output_file" 2>/dev/null || echo "0")
+    echo -e "${GREEN}[parse] Ditemukan $total soal pilihan ganda.${NC}" >&2
+    return 0
 }
 
-# Generate jawaban untuk satu soal pilihan ganda
+# Generate jawaban untuk satu soal pilihan ganda (dengan prompt yang lebih baik)
 generate_pilgan_answer() {
     local soal="$1"
     shift
     local options=("$@")
     
+    # Bangun teks opsi yang jelas
     local options_text=""
     for opt in "${options[@]}"; do
         options_text="${options_text}\n${opt}"
@@ -454,19 +566,24 @@ generate_pilgan_answer() {
     if [[ $DEBUG -eq 1 ]]; then
         echo -e "${YELLOW}[DEBUG] Soal yang dikirim ke AI:${NC}" >&2
         echo -e "${BLUE}$soal${NC}" >&2
-        echo -e "${YELLOW}[DEBUG] Opsi yang dikirim:${NC}" >&2
+        echo -e "${YELLOW}[DEBUG] Opsi yang dikirim (${#options[@]} opsi):${NC}" >&2
         for opt in "${options[@]}"; do
             echo -e "${BLUE}  $opt${NC}" >&2
         done
     fi
     
-    local system_prompt="Anda adalah asisten AI yang ahli dalam menjawab soal pilihan ganda. Tugas Anda adalah memilih satu jawaban yang paling benar dari opsi yang diberikan. Berikan hanya huruf jawaban (A, B, C, D, atau E) tanpa karakter lain, tanpa penjelasan, tanpa titik. Pastikan jawaban Anda akurat secara akademis."
+    # Pastikan jumlah opsi lengkap (5) – jika kurang, beri peringatan
+    if [[ ${#options[@]} -lt 5 ]]; then
+        echo -e "${YELLOW}[WARN] Opsi tidak lengkap (${#options[@]}/5). Tetap diproses.${NC}" >&2
+    fi
     
-    local user_prompt="Soal pilihan ganda berikut:\n\n$soal\n\nOpsi:\n$options_text\n\nPilih satu jawaban yang paling tepat. Jawab hanya dengan huruf kapital A, B, C, D, atau E. Jangan tambahkan kata lain."
+    local system_prompt="Anda adalah ahli dalam Pemrograman Berorientasi Objek (PBO/OOP). Tugas Anda menjawab soal pilihan ganda dengan tepat. Berikan hanya HURUF (A, B, C, D, atau E) tanpa karakter lain, tanpa titik, tanpa penjelasan. Pastikan jawaban benar secara akademis."
+    
+    local user_prompt="SOAL PILIHAN GANDA (OOP):\n\n$soal\n\nPILIHAN JAWABAN:\n$options_text\n\nPilih satu jawaban yang paling benar. Jawab hanya dengan huruf kapital A, B, C, D, atau E. Jangan tambahkan apapun."
     
     if [[ $DEBUG -eq 1 ]]; then
         echo -e "${YELLOW}[DEBUG] User prompt (first 500 chars):${NC}" >&2
-        echo "$user_prompt" | head -c 500 >&2
+        echo "$user_prompt" | head -c 10000 >&2
         echo "" >&2
     fi
     
@@ -477,7 +594,7 @@ generate_pilgan_answer() {
             \"system\": $(printf '%s' "$system_prompt" | jq -R -s -c .),
             \"prompt\": $(printf '%s' "$user_prompt" | jq -R -s -c .),
             \"stream\": false,
-            \"options\": {\"num_predict\": 10, \"temperature\": 0.3}
+            \"options\": {\"num_predict\": 10, \"temperature\": 0.2}
         }")
     
     local raw_answer=$(echo "$response" | jq -r '.response // empty' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
@@ -524,6 +641,12 @@ generate_all_pilgan_answers() {
                 opsi_array+=("$opt")
             fi
         done
+        
+        # Jika opsi kurang dari 2, skip
+        if [[ ${#opsi_array[@]} -lt 2 ]]; then
+            echo -e "${RED}Soal ID $id hanya memiliki ${#opsi_array[@]} opsi, dilewati.${NC}" >&2
+            continue
+        fi
         
         echo -e "\n${BLUE}========================================${NC}"
         echo -e "${YELLOW}[$count/$total] Soal ID $id:${NC}"
@@ -573,7 +696,6 @@ show_pilgan_detail() {
     echo -e "${YELLOW}====================================================${NC}"
 }
 
-# SUBMIT PILGAN DENGAN --data-raw DAN MENYIMPAN CURL KE FILE TMP UNTUK DEBUG
 submit_pilgan() {
     local mk="$1"
     local -n answers_ref=$2
@@ -584,59 +706,44 @@ submit_pilgan() {
     
     echo -e "${YELLOW}Mengirim jawaban pilihan ganda ke $submit_url ...${NC}"
     
-    # Bangun string data untuk --data-raw
-    local post_data=""
-    for id in "${!answers_ref[@]}"; do
-        # Encode key dan value menggunakan jq (percent-encoding)
-        local encoded_key=$(printf "jawaban[%s]" "$id" | jq -sRr @uri)
-        local encoded_value=$(printf "%s" "${answers_ref[$id]}" | jq -sRr @uri)
-        if [[ -n "$post_data" ]]; then
-            post_data+="&"
-        fi
-        post_data+="${encoded_key}=${encoded_value}"
-    done
-    
-    # Simpan curl command ke file untuk debugging
-    local curl_debug_file="$TEMP_DIR/curl_pilgan_submit.sh"
-    cat > "$curl_debug_file" <<EOF
-#!/bin/bash
-curl -s -L -X POST '$submit_url' \\
-  -b '$COOKIE' \\
-  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \\
-  -H 'Accept-Language: en-US,en;q=0.9' \\
-  -H 'Cache-Control: max-age=0' \\
-  -H 'Content-Type: application/x-www-form-urlencoded' \\
-  -H 'Origin: https://belajarpandai.com' \\
-  -H 'Referer: $referer_url' \\
-  -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0' \\
-  -H 'Upgrade-Insecure-Requests: 1' \\
-  --data-raw '$post_data' \\
-  --compressed
-EOF
-    chmod +x "$curl_debug_file"
-    echo -e "${YELLOW}[DEBUG] Curl command disimpan di: $curl_debug_file${NC}"
-    
-    # Eksekusi curl
-    local response=$(curl -s -L -X POST "$submit_url" \
-        -b "$COOKIE" \
+    # Bangun command curl dengan --data-urlencode untuk setiap jawaban
+    local curl_cmd="curl -s -L -X POST '$submit_url' \
+        -b '$COOKIE' \
         -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
         -H 'Accept-Language: en-US,en;q=0.9' \
         -H 'Cache-Control: max-age=0' \
         -H 'Content-Type: application/x-www-form-urlencoded' \
         -H 'Origin: https://belajarpandai.com' \
-        -H "Referer: $referer_url" \
+        -H 'Referer: $referer_url' \
         -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0' \
         -H 'Upgrade-Insecure-Requests: 1' \
-        --data-raw "$post_data" \
-        --compressed)
+        --compressed"
     
-    # Cek hasil
-    if echo "$response" | grep -qi "hasil.php\|sukses\|terima kasih\|redirect"; then
+    # Tambahkan setiap jawaban sebagai --data-urlencode
+    for id in "${!answers_ref[@]}"; do
+        curl_cmd="$curl_cmd --data-urlencode 'jawaban[$id]=${answers_ref[$id]}'"
+    done
+    
+    # Simpan command ke file untuk debugging
+    local curl_debug_file="$TEMP_DIR/curl_pilgan_submit.sh"
+    echo "$curl_cmd" > "$curl_debug_file"
+    chmod +x "$curl_debug_file"
+    echo -e "${YELLOW}[DEBUG] Curl command disimpan di: $curl_debug_file${NC}"
+    
+    # Eksekusi curl
+    local response=$(eval "$curl_cmd" 2>&1)
+    local exit_code=$?
+    
+    # Simpan response untuk debugging jika gagal
+    echo "$response" > "$TEMP_DIR/pilgan_response.txt"
+    
+    # Cek apakah response mengandung indikasi sukses
+    if echo "$response" | grep -qi "nilai\|hasil ujian\|terima kasih\|dashboard.php\|sukses\|berhasil"; then
         echo -e "${GREEN}✓ Jawaban pilihan ganda berhasil dikirim!${NC}"
         return 0
     else
-        echo -e "${RED}Gagal mengirim. Response disimpan di $TEMP_DIR/pilgan_response.txt${NC}"
-        echo "$response" > "$TEMP_DIR/pilgan_response.txt"
+        echo -e "${RED}Gagal mengirim jawaban. Response disimpan di $TEMP_DIR/pilgan_response.txt${NC}"
+        echo -e "${YELLOW}Response awal (max 20 baris):${NC}"
         cat "$TEMP_DIR/pilgan_response.txt" | head -n 20
         return 1
     fi
@@ -674,19 +781,32 @@ menu_pilgan() {
             continue
         fi
         
+        echo -e "${YELLOW}Ukuran HTML: $(stat -c%s "$html_file") bytes${NC}"
+        
         local soal_file="$TEMP_DIR/pilgan_daftar.txt"
         parse_pilgan "$html_file" "$soal_file"
         
         if [[ ! -s "$soal_file" ]]; then
             echo -e "${RED}Tidak dapat menemukan soal. Cek struktur HTML.${NC}"
             echo -e "${YELLOW}File HTML yang didownload: $html_file (size: $(stat -c%s "$html_file" 2>/dev/null || echo "0") bytes)${NC}"
+            echo -e "${YELLOW}Apakah Anda ingin melihat cuplikan HTML? (y/n)${NC}"
+            read -r show_html
+            if [[ "$show_html" == "y" ]]; then
+                head -n 50 "$html_file"
+            fi
             read -p "Tekan Enter..."
             continue
         fi
         
         local total=$(wc -l < "$soal_file")
         echo -e "${GREEN}Ditemukan $total soal pilihan ganda.${NC}"
-        sleep 1
+        echo -e "${YELLOW}Apakah Anda ingin melihat hasil parse per soal? (y/n)${NC}"
+        read -r show_parse
+        if [[ "$show_parse" == "y" ]]; then
+            cat "$soal_file"
+            echo "----------------------------------------"
+            read -p "Tekan Enter untuk melanjutkan..."
+        fi
         
         local regenerate=true
         while [[ "$regenerate" == true ]]; do
@@ -705,6 +825,24 @@ menu_pilgan() {
                     if [[ "$final_confirm" == "y" || "$final_confirm" == "Y" ]]; then
                         if submit_pilgan "$mk" answers; then
                             echo -e "${GREEN}Jawaban berhasil dikirim!${NC}"
+                            
+                            # ===== TAMPILKAN HASIL UJIAN (TAMBAHAN BARU) =====
+                            if [[ -f "$TEMP_DIR/pilgan_response.txt" ]]; then
+                                echo -e "${YELLOW}Mengambil data hasil ujian...${NC}"
+                                result=$(extract_result_data "$TEMP_DIR/pilgan_response.txt")
+                                IFS='|' read -r nilai total dikerjakan benar <<< "$result"
+                                
+                                if [[ -n "$nilai" && -n "$total" ]]; then
+                                    show_result_box "$nilai" "$total" "$dikerjakan" "$benar"
+                                else
+                                    echo -e "${RED}Tidak dapat mengekstrak nilai dari halaman hasil.${NC}"
+                                    echo -e "${YELLOW}Cuplikan respons (max 20 baris):${NC}"
+                                    head -n 20 "$TEMP_DIR/pilgan_response.txt"
+                                fi
+                            else
+                                echo -e "${RED}File response tidak ditemukan.${NC}"
+                            fi
+                            # =================================================
                         else
                             echo -e "${RED}Gagal mengirim jawaban. Silakan coba lagi.${NC}"
                         fi
